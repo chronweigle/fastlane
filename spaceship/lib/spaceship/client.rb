@@ -501,7 +501,68 @@ module Spaceship
       return false
     end
 
+    def new_login_attempt
+      return @service_key if @service_key
+      itc_service_key_path = "/tmp/spaceship_itc_service_key.txt"
+      return File.read(itc_service_key_path) if File.exist?(itc_service_key_path)
+
+
+
+      response = request(:get, "https://appstoreconnect.apple.com/login")
+      js_file_matches = response.body.match /<script[^\<\>]* src="([^\<\>\"]*itunesconnect\.min[^\<\>\"]*.js)"[^\<\>]*><\/script>/
+      if js_file_matches
+        js_file = js_file_matches[1]
+      else
+        raise "Could not find Auth javascript file"
+      end
+      response = request(:get, "https://appstoreconnect.apple.com#{js_file}")
+      js_extract_index = response.body.index("constant(\"ENV\"")
+      if js_extract_index == nil
+        raise "Could not find start location for ENV in login code"
+      end
+      js_extract_index2 = response.body.index("authServiceKey",js_extract_index)
+
+
+      if js_extract_index2 == nil
+        raise "Could not find start location for authServiceKey in login code"
+      end
+
+      js_extract_index3 = response.body.index("prod",js_extract_index2)
+
+
+      if js_extract_index3 == nil
+        raise "Could not find start location for authServiceKey -> prod in login code"
+      end
+
+      js_extract_index4 = response.body.index(",",js_extract_index3)
+
+
+      if js_extract_index4 == nil
+        raise "Could not find end location for authServiceKey -> prod in login code"
+      end
+
+      almost_auth_service_key = response.body[js_extract_index3,js_extract_index4]
+      auth_key_matches = almost_auth_service_key.match /:\s*\"([a-z0-9]*)\"\s*,/
+
+      if auth_key_matches
+        @service_key = auth_key_matches[1]
+      else
+        raise "Could not find Auth Key when extracting"
+      end
+
+      raise "Service key is empty" if @service_key.length == 0
+
+      # Cache the key locally
+      File.write(itc_service_key_path, @service_key)
+
+      return @service_key
+    rescue => ex
+      puts(ex.to_s)
+      raise AppleTimeoutError.new, "Could not receive latest API key from App Store Connect, this might be a server issue."
+    end
+
     def itc_service_key
+      return self.new_login_attempt
       return @service_key if @service_key
 
       # Check if we have a local cache of the key
