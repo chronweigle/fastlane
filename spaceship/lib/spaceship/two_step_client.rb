@@ -3,7 +3,7 @@ require 'tempfile'
 require_relative 'globals'
 require_relative 'tunes/tunes_client'
 require_relative 'tunes/recovery_device'
-
+require 'pp'
 module Spaceship
   class Client
     def handle_two_step(response)
@@ -41,9 +41,106 @@ module Spaceship
         select_device(r, device_id)
       elsif r.body.kind_of?(Hash) && r.body["trustedPhoneNumbers"].kind_of?(Array) && r.body["trustedPhoneNumbers"].first.kind_of?(Hash)
         handle_two_factor(r)
+      elsif r.body.kind_of?(Hash) && r.body["securityQuestions"].kind_of?(Hash)
+        handle_security_questions(r)
       else
         raise "Invalid 2 step response #{r.body}"
       end
+    end
+
+    def handle_security_questions(response)
+      @x_apple_id_session_id = response["x-apple-id-session-id"]
+      @scnt = response["scnt"]
+      pp(response.headers)
+
+      security_question_url = "https://github.com/fastlane/fastlane/tree/master/spaceship#2-step-verification"
+      if !File.exist?(security_questions_path)
+        raise "Security questions are not configured, see: #{security_question_url}"
+      end
+
+      answers = []
+
+      File.open(security_questions_path, "r") do |f|
+        f.each_line do |l|
+          unless l.empty?
+            keywords, answer = l.split(":",2)
+            puts("keywords #{keywords}, answer #{answer}")
+            answers << {
+                :keywords => keywords.split(",").map {|s| s.strip.downcase},
+                :answer   => answer.split
+            }
+          end
+        end
+      end
+
+      answered_questions = []
+      found_all = true
+      response.body["securityQuestions"]["questions"].each{ |q|
+        question = q.clone
+        question.delete("userDefined")
+
+        found_answer = false
+        answers.each {|answer|
+          q_text = question["question"].downcase
+          matched_all = true
+          answer[:keywords].each {|keyword|
+            unless q_text.include?(keyword)
+              matched_all = false
+              break
+            end
+          }
+
+          if matched_all
+            question["answer"] = answer[:answer]
+            answered_questions << question
+            found_answer = true
+            break
+          end
+        }
+        unless found_answer
+          found_all = false
+          break
+        end
+
+
+      }
+
+      if !found_all
+        raise "Not all security questions are configured."
+      end
+
+      # Send securityCode back to server to get a valid session
+      r = request(:post) do |req|
+        req.url("https://idmsa.apple.com/appleauth/auth/verify/questions")
+        req.headers['Content-Type'] = 'application/json'
+        req.body = { "questions" => answered_questions}.to_json
+
+        update_request_headers(req)
+        puts(req)
+      end
+
+      puts(r.body)
+      puts(r.status)
+      if r.status == 400 && r.body.kind_of?(Hash) && r.body["serviceErrors"].kind_of?(Array)
+        r.body["serviceErrors"].each {|err|
+          if err["code"] == "crIncorrect"
+            raise "Security Question answers incorrect"
+          end
+
+        }
+        raise "Error when answering Security Questions"
+      end
+
+      if r.status!= 204 || true
+        puts("WARNING: response code #{r.status} when answering security questions")
+      end
+      # we use `Spaceship::TunesClient.new.handle_itc_response`
+      # since this might be from the Dev Portal, but for 2 step
+      Spaceship::TunesClient.new.handle_itc_response(r.body)
+
+      store_session
+
+      return true
     end
 
     def handle_two_factor(response)

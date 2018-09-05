@@ -301,6 +301,15 @@ module Spaceship
       return path
     end
 
+    def security_questions_path
+      if ENV["SPACESHIP_SECURITY_QUESTIONS_PATH"]
+        path = ENV["SPACESHIP_SECURITY_QUESTIONS_PATH"]
+      else
+        path = File.join(FastlaneCore::FastlaneFolder.path,'security_questions.txt')
+      end
+
+      return path
+    end
     #####################################################
     # @!group Automatic Paging
     #####################################################
@@ -412,7 +421,6 @@ module Spaceship
 
       data = {
         accountName: user,
-        password: password,
         rememberMe: true
       }
 
